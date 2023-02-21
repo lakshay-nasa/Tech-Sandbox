@@ -12,34 +12,41 @@ import (
 )
 
 func main() {
-	var repo string
-	flag.StringVar(&repo, "repo", "", "GitHub repository URL")
+	// Parse the command-line arguments
+	var repoURL string
+	flag.StringVar(&repoURL, "repo", "", "the URL of the repository to fetch")
 	flag.Parse()
 
-	if repo == "" {
-		fmt.Println("Please provide a GitHub repository URL using the -repo flag")
+	if repoURL == "" {
+		fmt.Println("Please specify a repository URL using the -repo flag.")
 		os.Exit(1)
 	}
 
-	// Remove the protocol and "github.com/" from the URL to get the username and repo name
-	parts := strings.Split(repo, "/")
-	if len(parts) != 5 {
-		fmt.Println("Invalid repository URL")
+	// Split the URL into parts
+	parts := strings.Split(repoURL, "/")
+	if len(parts) < 4 {
+		fmt.Println("Invalid repository URL:", repoURL)
 		os.Exit(1)
 	}
-	username := parts[3]
-	repoName := parts[4]
+	owner := parts[len(parts)-2]
+	repo := parts[len(parts)-1]
 
-	// Create the directory to save the repository contents
-	dirName := fmt.Sprintf("%s-%s", username, repoName)
-	err := os.Mkdir(dirName, 0755)
+	// Create a temporary directory to download the repository into
+	dirName, err := os.MkdirTemp("", "fetch-repo-*")
 	if err != nil {
-		fmt.Println("Failed to create directory:", err)
+		fmt.Println("Failed to create temporary directory:", err)
 		os.Exit(1)
 	}
 
-	// Fetch the repository's contents
-	resp, err := http.Get(fmt.Sprintf("https://api.github.com/repos/%s/%s/contents", username, repoName))
+	// Fetch the repository contents
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents", owner, repo)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		fmt.Println("Failed to create request:", err)
+		os.Exit(1)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		fmt.Println("Failed to fetch repository contents:", err)
 		os.Exit(1)
@@ -47,9 +54,9 @@ func main() {
 	defer resp.Body.Close()
 
 	// Parse the repository contents as JSON
-	var contents struct {
+	var contents []struct {
 		Name string `json:"name"`
-		URL  string `json:"url"`
+		URL  string `json:"download_url"`
 	}
 	err = json.NewDecoder(resp.Body).Decode(&contents)
 	if err != nil {
@@ -57,31 +64,37 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Download the file from the repository
-	if contents.Name != ".gitignore" && contents.Name != ".gitattributes" {
-		resp, err := http.Get(contents.URL)
+	// Download the files from the repository
+	for _, c := range contents {
+		if c.Name == ".gitignore" || c.Name == ".gitattributes" {
+			continue
+		}
+
+		resp, err := http.Get(c.URL)
 		if err != nil {
-			fmt.Printf("Failed to fetch file %s: %s\n", contents.Name, err)
+			fmt.Printf("Failed to fetch file %s: %s\n", c.Name, err)
 			os.Exit(1)
 		}
 		defer resp.Body.Close()
 
 		// Create the file to write the contents to
-		filePath := filepath.Join(dirName, contents.Name)
+		filePath := filepath.Join(dirName, c.Name)
 		out, err := os.Create(filePath)
 		if err != nil {
-			fmt.Printf("Failed to create file %s: %s\n", contents.Name, err)
+			fmt.Printf("Failed to create file %s: %s\n", c.Name, err)
 			os.Exit(1)
 		}
 		defer out.Close()
 
 		// Write the file contents to the file
-		buf := make([]byte, 4096) // create a buffer to use with io.CopyBuffer
-		_, err = io.CopyBuffer(out, resp.Body, buf)
+		_, err = io.Copy(out, resp.Body)
 		if err != nil {
-			fmt.Printf("Failed to write file %s: %s\n", contents.Name, err)
+			fmt.Printf("Failed to write file %s: %s\n", c.Name, err)
 			os.Exit(1)
 		}
-		fmt.Printf("File %s downloaded and saved to %s\n", contents.Name, filePath)
+
+		fmt.Printf("File %s downloaded and saved to %s\n", c.Name, filePath)
 	}
+
+	fmt.Printf("Repository downloaded to %s\n", dirName)
 }
